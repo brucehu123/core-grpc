@@ -1,9 +1,8 @@
 ﻿using Grpc.Core;
+using System.Collections.Generic;
 using Overt.Core.Grpc.Intercept;
 #if ASP_NET_CORE
-using Grpc.Core.Interceptors;
 using Microsoft.Extensions.Options;
-using System.Linq;
 #endif
 using System;
 
@@ -14,22 +13,19 @@ namespace Overt.Core.Grpc
     /// </summary>
     public class GrpcClientFactory<T> : IGrpcClientFactory<T> where T : ClientBase
     {
-        private readonly IClientTracer _tracer;
-        private readonly GrpcClientFactoryOptions _factoryOptions;
+        private GrpcClientOptions<T> _options;
 
 #if ASP_NET_CORE
-        private readonly GrpcClientOptions<T> _options;
-       
-        public GrpcClientFactory(IOptions<GrpcClientOptions<T>> options = null,IOptions<GrpcClientFactoryOptions> factoryOptions=null, IClientTracer tracer = null)
+        public GrpcClientFactory(IOptions<GrpcClientOptions<T>> options)
         {
             _options = options?.Value;
-            _factoryOptions=factoryOptions?.Value;
-            _tracer = tracer;
+            InitOptions();
         }
 #else
-        public GrpcClientFactory(IClientTracer tracer = null)
+        public GrpcClientFactory(GrpcClientOptions options)
         {
-            _tracer = tracer;
+            _options = new GrpcClientOptions<T>(options);
+            InitOptions();
         }
 #endif
 
@@ -38,44 +34,42 @@ namespace Overt.Core.Grpc
         /// </summary>
         /// <typeparam name="T"></typeparam>
         /// <returns></returns>
-        public T Get(string configPath = "")
+        public T Get(Func<List<ServerCallInvoker>, ServerCallInvoker> callInvokers = null)
         {
-            var _callInvoker = GetCallInvoker(configPath);
-#if ASP_NET_CORE
-            if(_factoryOptions.Interceptors.Count>0)
-                             _callInvoker.Intercept(_factoryOptions.Interceptors.ToArray());
-#endif
-            var client = (T)Activator.CreateInstance(typeof(T), _callInvoker);
+            var exitus = StrategyFactory.Get<T>(_options);
+            var callInvoker = new ClientCallInvoker(_options, exitus.EndpointStrategy, callInvokers);
+            var client = (T)Activator.CreateInstance(typeof(T), callInvoker);
             return client;
         }
 
-#region Private Method
+        #region Private Method
         /// <summary>
-        /// 获取CallInvoker
+        /// 初始化配置
         /// </summary>
-        /// <returns></returns>
-        private ClientCallInvoker GetCallInvoker(string configPath = "")
+        private void InitOptions()
         {
-            var exitus = StrategyFactory.Get<T>(GetConfigPath(configPath));
-            var callInvoker = new ClientCallInvoker(exitus.EndpointStrategy, exitus.ServiceName, exitus.MaxRetry, _tracer);
-            return callInvoker;
+            _options = _options ?? new GrpcClientOptions<T>();
+            _options.ConfigPath = GetConfigPath(_options.ConfigPath);
+            if (_options.Tracer != null)
+                _options.Interceptors.Add(new ClientTracerInterceptor(_options.Tracer));
         }
 
         /// <summary>
         /// 获取命名空间
         /// </summary>
         /// <returns></returns>
-        private string GetConfigPath(string configPath = "")
+        private string GetConfigPath(string configPath)
         {
 #if ASP_NET_CORE
             if (string.IsNullOrEmpty(configPath))
-                configPath = _options?.ConfigPath;
-#endif
-            if (string.IsNullOrEmpty(configPath))
                 configPath = $"dllconfigs/{typeof(T).Namespace}.dll.json";
+#else
+            if (string.IsNullOrEmpty(configPath))
+                configPath = $"dllconfigs/{typeof(T).Namespace}.dll.config";
+#endif
 
             return configPath;
         }
-#endregion
+        #endregion
     }
 }
